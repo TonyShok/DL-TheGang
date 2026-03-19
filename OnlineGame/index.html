@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Co-op Poker</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e9e9e9; text-align: center; padding: 20px; }
+        .panel { background: #16213e; margin: 15px auto; padding: 20px; width: 90%; max-width: 800px; border-radius: 12px; border: 1px solid #0f3460; }
+        .card { display: inline-block; background: #fff; color: #000; padding: 10px; margin: 5px; border-radius: 8px; font-weight: bold; width: 45px; border: 2px solid #333; }
+        .red { color: #e94560; }
+        button { padding: 12px 24px; cursor: pointer; background: #0f3460; color: white; border: none; border-radius: 6px; font-weight: bold; }
+        .ready-active { background: #e94560 !important; }
+        .rank-row { background: #0f3460; margin: 5px 0; padding: 10px; border-radius: 8px; display: flex; justify-content: space-between; }
+        .history-item { text-align: left; background: rgba(255,255,255,0.05); padding: 8px; margin: 5px 0; border-radius: 5px; border-left: 4px solid #533483; font-size: 0.9em; }
+        input { padding: 10px; border-radius: 5px; border: none; width: 80px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="status-msg" style="color: #f1c40f;">Disconnected</div>
+
+    <div id="login" class="panel">
+        <input type="text" id="nameInput" placeholder="Name">
+        <button onclick="join()">Join</button>
+    </div>
+
+    <div id="lobby" class="panel" style="display:none;">
+        <div id="playerList"></div><br>
+        <button id="startBtn" onclick="send('start')" style="display:none; background: #228b22;">START</button>
+    </div>
+
+    <div id="game" class="panel" style="display:none;">
+        <h2 id="stage"></h2>
+        <div>Community: <div id="comm"></div></div>
+        <div>Your Hand: <div id="hand"></div></div>
+        <hr style="border:0; border-top:1px solid #0f3460; margin:20px;">
+        <div style="display: flex; gap: 20px; text-align: left;">
+            <div style="flex: 1;">
+                <h3>Rankings</h3>
+                <div id="order"></div>
+                <div style="margin-top: 10px;">
+                    <input type="number" id="rankInput" placeholder="#">
+                    <button onclick="swap()">Swap</button>
+                </div>
+                <button id="endBtn" onclick="send('toggle_ready')" style="width: 100%; margin-top: 15px;">VOTE END</button>
+                <p id="readyStatus" style="text-align:center; font-size:0.8em;"></p>
+            </div>
+            <div style="flex: 1;">
+                <h3>History</h3>
+                <div id="history"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="showdown" class="panel" style="display:none;">
+        <h1 id="winLose"></h1>
+        <p>Actual Ranking: <span id="actual" style="color:#00d2ff"></span></p>
+        <button onclick="send('reset')" style="background: #228b22;">PLAY AGAIN</button>
+    </div>
+
+    <script>
+        let ws, myName = "";
+        const $ = id => document.getElementById(id);
+
+        function join() {
+            myName = $('nameInput').value.trim();
+            if (!myName) return;
+            ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+            ws.onopen = () => { $('login').style.display='none'; send('join', {name:myName}); };
+            ws.onmessage = (e) => updateUI(JSON.parse(e.data));
+        }
+
+        function send(action, data = {}) { ws.send(JSON.stringify({action, ...data})); }
+        function swap() {
+            const r = $('rankInput').value;
+            if(r) send('swap', {rank: r});
+            $('rankInput').value = "";
+        }
+
+        function formatCard(c) {
+            const sym = {'S':'♠','H':'♥','D':'♦','C':'♣'}[c.slice(-1)];
+            return `<div class="card ${c.includes('H')||c.includes('D')?'red':''}">${c.slice(0,-1)}${sym}</div>`;
+        }
+
+        function updateUI(s) {
+            $('status-msg').innerText = `Stage: ${s.stage}`;
+            if (s.stage === "Waiting") {
+                $('lobby').style.display = 'block';
+                $('game').style.display = 'none';
+                $('showdown').style.display = 'none';
+                $('playerList').innerText = s.players_connected.join(" • ");
+                $('startBtn').style.display = s.players_connected.length >= 3 ? 'inline-block' : 'none';
+            } else if (!s.game_over) {
+                $('lobby').style.display = 'none';
+                $('game').style.display = 'block';
+                $('stage').innerText = s.stage;
+                $('comm').innerHTML = s.community_cards.map(formatCard).join('') || "...";
+                $('hand').innerHTML = s.my_hand.map(formatCard).join('');
+                $('order').innerHTML = s.current_order.map((p, i) => `<div class="rank-row">#${i+1} ${p} ${p===myName?'(YOU)':''}</div>`).join('');
+                $('endBtn').innerText = s.is_ready ? "CANCEL END" : "VOTE END TURN";
+                $('endBtn').className = s.is_ready ? "ready-active" : "";
+                $('readyStatus').innerText = `${s.ready_count}/${s.players_connected.length} Ready`;
+                $('history').innerHTML = s.history.map(h => `<div class="history-item"><b>${h.stage}:</b> ${h.order.join(' > ')}</div>`).reverse().join('');
+            } else {
+                $('game').style.display = 'none';
+                $('showdown').style.display = 'block';
+                $('winLose').innerText = s.results.won ? "SUCCESS" : "FAIL";
+                $('actual').innerText = s.results.actual_order.join(" > ");
+            }
+        }
+    </script>
+</body>
+</html>
