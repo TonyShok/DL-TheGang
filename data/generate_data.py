@@ -2,6 +2,7 @@ import os
 import math
 import random
 import itertools
+import json
 from collections import Counter
 
 try:
@@ -12,6 +13,85 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+
+# =========================
+# 任务说明常量 (Instruction)
+# =========================
+TASK_INSTRUCTION = """# 任务说明：德州扑克位次博弈 (Poker Positioning Game)
+
+## 1. 你的角色与目标
+你是一个智能博弈代理。你正在与其他玩家进行一场**合作策略游戏**。
+**你的目标**：调整自己的位次，使得游戏结束时，所有玩家构成的序列与其“手牌强度”完全符合。
+* **索引 1 (最强)**：必须是全场手牌最强的玩家。
+* **索引 N (最弱)**：必须是全场手牌最弱的玩家。
+**胜负判定**：这是一种“全有或全无”的挑战。只有当全场所有人的顺序都符合“强度从强到弱”的排列时（如果你和别人的牌力**完全相同（平局）**，你们两个谁在前谁在后都可以，不影响满分奖励），所有人才能获得 **1.0** 奖励；否则，所有人获得 **0.0**。
+
+## 2. 基础规则详解
+由于你可能不熟悉德州扑克，请严格遵守以下规则：
+
+### A. 牌面构成
+牌面表示：每张牌由“数字+花色”组成（如 10H 代表红桃10，AS 代表黑桃A）。
+数字 (Rank)：2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K, A（手牌大小按这个顺序递增, A 为最大, 2 为最小）。
+花色 (Suit)：S (黑桃), H (红桃), D (方块), C (草花)。
+* **手牌**：你手中有 2 张只有你能看见的底牌。
+* **公共牌**：桌面上公开的牌（0 到 5 张），所有人共用。
+
+### B. 牌型强度排列（从强到弱）
+你需要用你的 2 张底牌与公共牌组合，选出最强的 5 张牌，按以下等级比大小：
+1. **同花顺**：同花色的顺子。
+2. **四条**：四张相同数字的牌。
+3. **葫芦**：三张相同数字 + 一对。
+4. **同花**：五张牌花色相同。
+5. **顺子**：五张数字连续的牌（如 5-6-7-8-9）。
+6. **三条**：三张相同数字的牌。
+7. **两对**：两个对子。
+8. **对子**：两张相同数字的牌。
+9. **高牌**：没有任何组合，只比单张大小。
+
+## 3. 核心策略：信息传递
+这是一个**信息不对称**的游戏。
+* 你只知道自己的牌，不知道别人的牌。
+* **位次变动是唯一的信息来源**：如果一个玩家冒着风险冲向“索引 1”，说明他试图告诉你他的牌非常强。
+* 你需要观察其他玩家的行为，结合你自己的牌力，猜测你应该处于什么位置。
+
+## 4. 输出规范
+* 你的输出必须且只能包含一个用 `\\boxed{}` 包裹的数字。
+* 这个数字代表你想要移动到的**目标索引 (aim)**，范围是 1 到 N。
+* **禁止输出任何解释文字。**
+
+## 5. 决策示例
+
+### 示例一（3人局，Pre-Flop阶段）
+* **观察 (Observation)**：
+    * `my_hand`: `[AS, AH]` (一对A，全场最强的起始底牌)
+    * `community`: `[]` (尚未发牌)
+    * `current_order`: `['C', 'B', 'A']` (你目前在最后一名)
+    * `my_id`: `'A'` | `my_pos`: 3
+* **分析**：你拥有一对A，极其强大，理应排在最前面（索引 1）。
+* **输出**：`\\boxed{1}`
+
+### 示例二（5人局，River阶段）
+* **观察 (Observation)**：
+    * `my_hand`: `[2S, 7D]` (数字很小，且不凑对，极弱)
+    * `community`: `[KH, QH, JH, 10H, 2H]` (桌面上已经是同花)
+    * `current_order`: `['A', 'B', 'C', 'D', 'E']`
+    * `my_id`: `'A'` | `my_pos`: 1
+* **分析**：虽然桌面上有强大的公共牌，但所有人都共用它。你的底牌非常差，完全无法增强牌力。此时你排在第 1 位（最强位），这会干扰其他真正有大牌的人。为了全场拿到 1.0 奖励，你应该主动退到最后。
+* **输出**：`\\boxed{5}`
+
+### 6. 输入格式 (Observation)
+在每一轮决策时，你会获得以下信息：
+* `hand`: 你的 2 张底牌。
+* `community`: 当前已发出的社区牌。
+* `current_order`: 玩家当前的实时位次序列。
+* `current_pos`: 你当前所在的索引位置。
+* `stage`: 当前比赛阶段（如 "Flop"）。
+* `history`: 之前各阶段达成的最终位次快照。
+
+### 7. 决策准则
+1.  **评估实力**：根据当前已知牌面，估算你在所有玩家中的实力分位。
+2.  **表达意图**：如果你认为你的实力被低估（排在比你弱的人后面），你应该通过 `aim` 向上移动。
+3.  **达成共识**：如果当前位次已经正确反映了你的实力范围（包括平局情况），你应该选择保持当前位置，以尽快结束回合获取奖励。"""
 
 # =========================
 # 基础牌类
@@ -81,13 +161,15 @@ class NarrativePokerGame:
         self.current_small_round = None
         self.action_history = []
         
-        # 修复属性缺失报错
         self.stage_commit_pos = {p: 0 for p in self.player_names}
         self.stage_claim_count = {p: 0 for p in self.player_names}
         self.stage_reclaim_count = {p: 0 for p in self.player_names}
         self.stage_entry_private_info = {}
         
-        self.log_buffer = []  # 增加日志缓冲区
+        self.log_buffer = []
+        
+        # 新增：用于存储 JSONL 数据的列表
+        self.json_steps = []
 
     def log(self, text):
         self.log_buffer.append(text)
@@ -202,7 +284,7 @@ class NarrativePokerGame:
         return f"高牌"
 
     # -------------------------
-    # 绝对牌力评估 (无情粉碎公牌碰瓷)
+    # 绝对牌力评估
     # -------------------------
 
     def get_absolute_power(self, player, stage):
@@ -221,10 +303,9 @@ class NarrativePokerGame:
             rank, best_combo = self.best_hand_detail(hand)
             rv, kickers = rank
             
-            # 【核心修复】：检测纯蹭公牌
             board_best, _ = self.best_hand_detail([])
             if rv == board_best[0] and kickers == board_best[1]:
-                return 0.0 # 蹭局的空气，剥夺所有分数！
+                return 0.0 # 蹭局的空气，剥夺所有分数
             
             score = rv * 1000000
             for i, k in enumerate(kickers):
@@ -268,69 +349,80 @@ class NarrativePokerGame:
         return 1.0 if matches else 0.0
 
     # -------------------------
-    # 严格量化竞价逻辑 (Strict Bidding)
+    # 高级推断竞价逻辑 (Optimized Bidding)
     # -------------------------
 
     def _choose_action(self, player, stage):
         power = self.get_absolute_power(player, stage)
         current_pos = self.current_order.index(player)
+        my_idx = self.player_names.index(player)
         
-        # 1. 制定初始锚点
+        # 1. 制定更细腻的初始锚点
         if stage == "Pre-Flop":
-            if power >= 2000: base_aim = 0     # AA-22 (所有的对子)
-            elif power >= 700: base_aim = 1    # AKs, AQs 顶级连张
-            elif power >= 150: base_aim = 2    # 普通同花连牌
-            else: base_aim = 3                 # 空气垃圾 (必须垫底)
+            if power >= 2000: base_aim = 0     # 所有的对子 AA-22
+            elif power >= 500: base_aim = 1    # 优质同花
+            elif power >= 120: base_aim = 2    # 高张非同花
+            else: base_aim = 3                 # 垃圾牌
         else:
             if power >= 3000000: base_aim = 0  # 三条或以上坚果
-            elif power >= 1200000: base_aim = 1# 顶对 / 超对
-            elif power > 0: base_aim = 2       # 中小对子
-            else: base_aim = 3                 # 被识破的公牌碰瓷空气
-
+            elif power >= 1500000: base_aim = 1# 两对及好踢脚的顶对
+            elif power >= 500000: base_aim = 2 # 小对子
+            else: base_aim = 3                 # 空气
+            
         if self.current_small_round == 1:
             return base_aim
             
-        # 2. 推断对手绝对下限，逼迫弱牌退让
+        # 2. 动态博弈逼退估值 (Tie-breaking Engine)
         opp_powers = []
         for p in self.player_names:
             if p != player:
                 c_pos = self.stage_commit_pos[p]
                 claims = self.stage_claim_count[p]
                 reclaims = self.stage_reclaim_count.get(p, 0)
+                agg = claims + reclaims # 强硬度
                 
                 est = 0
                 if stage == "Pre-Flop":
-                    if c_pos == 0: est = 2000 + reclaims * 200
-                    elif c_pos == 1: est = 700 + claims * 50
-                    elif c_pos == 2: est = 150
+                    if c_pos == 0: est = 2000 + agg * 60
+                    elif c_pos == 1: est = 500 + agg * 60
+                    elif c_pos == 2: est = 120 + agg * 30
+                    else: est = agg * 30
                 else:
-                    if c_pos == 0: est = 3000000 + reclaims * 200000
-                    elif c_pos == 1: est = 1200000 + claims * 100000
-                    elif c_pos == 2: est = 100000
-                opp_powers.append(est)
+                    if c_pos == 0: est = 3000000 + agg * 1000000
+                    elif c_pos == 1: est = 1500000 + agg * 400000
+                    elif c_pos == 2: est = 500000 + agg * 200000
+                    else: est = agg * 100000
+                    
+                opp_powers.append((est, self.player_names.index(p)))
                 
-        opp_powers.sort(reverse=True)
+        # 严格消除平局死锁，匹配 compute_total_order 的 Python 原生字符比对降序规则
         my_rank = 0
-        for est in opp_powers:
+        for est, opp_idx in opp_powers:
             if power < est:
                 my_rank += 1
-                
+            elif power == est:
+                # 破冰处理：如果估值完全相等（如全是0战力的空气），按固定的索引强行错开，绝不撞车
+                if opp_idx > my_idx:
+                    my_rank += 1
+                    
         aim = my_rank
         
-        # 3. 神经网络特征级干预 (兼容你的 assist_model)
+        # 3. 神经网络特征级干预 
         if not self.collect_training and self.assist_model is not None:
             best_aim = aim
             best_score = self._candidate_nn_score(player, stage, aim)
             for cand in range(4):
                 if cand != aim:
                     sc = self._candidate_nn_score(player, stage, cand)
-                    if sc > best_score + 0.3: # 给规则一点权重，避免抖动
+                    # 提升规则置信阈值至0.4，防止NN错误覆盖极其精妙的算力排序
+                    if sc > best_score + 0.4: 
                         best_score = sc
                         best_aim = cand
             aim = best_aim
 
-        if aim < current_pos and self.current_small_round > 2:
-            aim = current_pos # 防止无限死锁循环
+        # 4. 终局防抖机制
+        if aim < current_pos and self.current_small_round >= self.max_small_rounds:
+            aim = current_pos 
 
         return aim
 
@@ -341,8 +433,8 @@ class NarrativePokerGame:
         
         if stage == "Pre-Flop":
             if power >= 2000: strength_text = "这是极具压制力的顶级口袋对，绝对宣示主权。"
-            elif power >= 700: strength_text = "这是一手强牌，理应去前排建立威慑。"
-            elif power >= 150: strength_text = "这牌潜力尚可，适合待在中游。"
+            elif power >= 500: strength_text = "这是一手优质同花连牌或高张，理应去前排建立威慑。"
+            elif power >= 120: strength_text = "这牌潜力尚可，适合待在中游。"
             else: strength_text = "这是极其垃圾的散牌，必须主动退让去垫底。"
         else:
             rank, _ = self.best_hand_detail(self.players[player])
@@ -350,14 +442,16 @@ class NarrativePokerGame:
                 strength_text = "虽然公牌很大，但我底牌完全没用上，我是碰瓷蹭局的纯空气！"
             elif power >= 3000000:
                 strength_text = f"我击中了强大的 {self.rank_tuple_to_text(rank)}，这是怪物坚果牌。"
-            elif power >= 1200000:
+            elif power >= 1500000:
                 strength_text = f"我击中了扎实的 {self.rank_tuple_to_text(rank)}，压制力不错。"
+            elif power >= 500000:
+                strength_text = f"我仅有中低对子 {self.rank_tuple_to_text(rank)}，勉强自保。"
             else:
-                strength_text = f"我仅有弱对子 {self.rank_tuple_to_text(rank)}，勉强自保。"
+                strength_text = "我没有击中任何有效牌型，只能退让。"
 
-        if aim < current_pos: action_text = f"综合局势与我的硬实力，我决定强硬前压到索引 {aim}。"
-        elif aim > current_pos: action_text = f"前排争抢太过凶猛，对比实力后我理智退让到索引 {aim} 保全胜率。"
-        else: action_text = f"我权衡当前局势，决定坚守在目前的索引 {aim}。"
+        if aim < current_pos: action_text = f"综合局势与我的硬实力，我决定强硬前压到索引 {aim + 1}。"
+        elif aim > current_pos: action_text = f"前排争抢太过凶猛，对比实力后我理智退让到索引 {aim + 1} 保全胜率。"
+        else: action_text = f"我权衡当前局势，决定坚守在目前的索引 {aim + 1}。"
             
         return f"{scene} {hole_text} {strength_text} {action_text}"
 
@@ -488,11 +582,23 @@ class NarrativePokerGame:
                 pos = self.current_order.index(player)
                 self._record_training_sample(player, stage)
                 
+                # 构建符合要求的 Input 字符串
+                current_input = (
+                    f"current_order：{self.current_order},history：{self.history_orders}\n"
+                    f"current_pos：{pos + 1}，hand：{self.cards_str(self.players[player])}\n"
+                    f"community：{self.cards_str(self.community_cards)}，stage：{stage}"
+                )
+
                 aim = self._choose_action(player, stage)
                 thought = self._compose_thought(player, stage, pos, aim)
                 
+                # 构建输出：决策需要转为 1-N 的 1-indexed 形式
+                current_output = f"{thought}\n决策动作：\\boxed{{{aim + 1}}}"
+                
+                self.json_steps.append([current_input, current_output])
+                
                 self.log(f"  - {player} 视角独白：{thought}")
-                self.log(f"    决策动作：\\boxed{{{aim}}}（索引 {pos} -> {aim}）")
+                self.log(f"    决策动作：\\boxed{{{aim + 1}}}（索引 {pos + 1} -> {aim + 1}）")
 
                 if aim != pos:
                     if aim < pos:
@@ -521,6 +627,18 @@ class NarrativePokerGame:
         self.betting_round("Turn")
         self.community_cards.extend(self.deck.deal(1))
         self.betting_round("River")
+
+    def to_jsonl_dict(self):
+        if not self.json_steps:
+            return None
+        main_input, main_output = self.json_steps[-1]
+        history_steps = self.json_steps[:-1]
+        return {
+            "instruction": TASK_INSTRUCTION,
+            "input": main_input,
+            "output": main_output,
+            "history": history_steps
+        }
 
     def render_report(self, game_idx=1):
         lines = [f"### 对局 [{game_idx}]", f"[随机种子: {self.seed}]", "[真实底牌汇总，仅供最终结算参考；玩家思维链中不允许互相透底]"]
@@ -722,7 +840,7 @@ def get_global_assist_model():
     return _GLOBAL_ASSIST_MODEL
 
 # =========================
-# 批量生成
+# 批量生成及导出
 # =========================
 
 def generate_one_game(num_games):
@@ -737,20 +855,24 @@ def generate_one_game(num_games):
     game.play_game()
     report = game.render_report(num_games)
     reward = game.get_reward()
-    return report, reward
+    jsonl_dict = game.to_jsonl_dict()
+    return report, reward, jsonl_dict
 
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("🚀 启动【严格量化过滤版】强化学习博弈环境 🚀")
-    print("= 已彻底修复：假同花高估陷阱 & 公牌假对子碰瓷漏洞 =")
+    print("🚀 启动【高级量化博弈引擎】(附带 JSONL 思维链导出) 🚀")
+    print("= 已彻底修复：无限死锁 & 0战力空气牌扎堆撞车缺陷 =")
     
     texts = []
+    jsonl_records = []
     epochs = 200
     correct = 0
 
     for i in range(epochs):
-        text, reward = generate_one_game(i + 1)
+        text, reward, jsonl_dict = generate_one_game(i + 1)
         texts.append(text)
+        if jsonl_dict:
+            jsonl_records.append(jsonl_dict)
         if reward == 1.0:
             correct += 1
 
@@ -759,11 +881,12 @@ if __name__ == "__main__":
     summary = []
     summary.append(f"总对局数: {epochs}")
     summary.append(f"命中局数: {correct}")
-    summary.append(f"准确率: {acc:.2%}")
+    summary.append(f"预测准确率: {acc:.2%}")
     summary_text = "\n".join(summary)
 
     print(summary_text)
 
+    # 1. 导出战报
     if os.path.exists("mock_game.txt"):
         os.remove("mock_game.txt")
 
@@ -771,3 +894,13 @@ if __name__ == "__main__":
         f.write(summary_text + "\n\n")
         for text in texts:
             f.write(text + "\n\n")
+            
+    # 2. 导出模型思维链训练数据 (严格按要求转化 1-indexed)
+    jsonl_filename = "poker_training_data.jsonl"
+    with open(jsonl_filename, "w", encoding="utf-8") as f:
+        for record in jsonl_records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            
+    print(f"\n✅ 执行完毕！")
+    print(f"- 文本报表已保存: mock_game.txt")
+    print(f"- 模型大本营已导出: {jsonl_filename} (共计 {len(jsonl_records)} 条)")
